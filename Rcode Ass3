@@ -1,0 +1,146 @@
+
+library(tidyr)
+library(lubridate)
+library(forcats)
+library(dplyr)
+library(tidyverse)
+#data1 DATASET
+data1 <- read_delim(file = "/Users/mac/Desktop/Data Science/DPV/Datasets/SuperSales/SuperstoreSales_main.csv",
+                               delim = ";", col_names = TRUE, col_types = NULL)
+head(data1)
+
+#start product  table
+product2 <- SuperstoreSales_main %>% select (Product.Name, Product.Category, Product.Sub.Category, Order.ID ) %>%
+  rename(orderid = Order.ID, pname = Product.Name, pcategory = Product.Category, psubcategory = Product.Sub.Category) %>%  
+  arrange(orderid, pname, pcategory, psubcategory) %>%
+  group_by(orderid, pname, pcategory, psubcategory) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(productid = row_number())
+#finish product table
+
+#start customer table
+customer2 <- SuperstoreSales_main %>%  select(Customer.Name, Province, Region, Customer.Segment) %>%
+  rename(cname = Customer.Name, cprovince = Province, cregion= Region, csegment = Customer.Segment ) %>%                      
+  arrange(cname, cprovince, cregion, csegment) %>%
+  group_by(cname, cprovince, cregion, csegment) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(customerid = row_number())
+#finish customer table
+
+#start returns
+returns <-SuperstoreSales_returns %>% 
+  select(Order.ID, Status, ) %>% 
+  rename(orderid = Order.ID, status=Status ) %>% 
+  arrange(orderid, status) %>%
+  group_by(orderid, status) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(orderid2 = row_number())
+#finish of returns table
+
+#start sales table
+salestable <- SuperstoreSales_main %>% 
+select(Order.ID, Sales, Order.Quantity, Unit.Price, Profit, Shipping.Cost, Order.Date, Ship.Date) %>%
+rename(orderid = Order.ID, salesn = Sales, orderquantity = Order.Quantity, unitprice = Unit.Price, profit = Profit, shippingcost = Shipping.Cost, orderdate = Order.Date, shipdate = Ship.Date) %>%                         
+arrange(orderid, salesn, orderquantity, unitprice, profit, shippingcost, orderdate, shipdate) %>%
+group_by(orderid, salesn, orderquantity, profit, shippingcost) %>%
+#summarise? (counting, mean, average based on group by)
+distinct(orderid, salesn, orderquantity, profit, shippingcost, unitprice, orderdate, shipdate) %>%
+ungroup(orderid, salesn, orderquantity, profit, shippingcost, unitprice, orderdate, shipdate) %>%
+mutate(salesid = row_number())
+#finish of sales table
+
+#checking class of orderdate&shipdate
+class(salestable$orderdate)
+class(salestable$shipdate)
+
+
+#making date format
+as.Date(salestable$orderdate, format = "%m/%d/%Y")
+as.Date(salestable$shipdate, format = "%m/%d/%Y")
+#making date format
+
+#getting status of late or not
+salestable  <- salestable%>%
+  mutate(orderdate = dmy(`orderdate`), shipdate = dmy(`shipdate`),
+         number_days = interval(orderdate,shippedDate)/ddays(),
+         LateValue = if_else(number_days>2,"Late","NotLate"),
+         idLateStatus = row_number())
+
+
+#reating not returned status
+returns$status <- fct_explicit_na(returns$status, na_level="Not Returned")
+return$status [is.na(returns$status)] <- "Not Returned"
+returns <- returns %>%  select(-orderid2)
+
+#return table 2
+returns <-SuperstoreSales_returns %>% 
+select(Order.ID, Status, ) %>% 
+  rename(orderid = Order.ID, status=Status ) %>% 
+  arrange(orderid, status) %>%
+  group_by(orderid, status) %>%
+  distinct() %>%
+  ungroup() %>%
+  mutate(orderid2 = row_number())
+
+
+#grouping returns 
+returns <-dplyr::full_join(product2,returns)
+returns <- dplyr::full_join (salestable, returns)
+returns <- returns %>% select(-orderid2, -LateValue, -idLateStatus, -salesn, -shippingcost, -unitprice, -shipdate, -number_days, -salesid, -profit, -orderdate)
+returns$status <- fct_explicit_na(returns$status, na_level="Not Returned")
+returns <- returns %>% filter(status == "Returned")
+
+
+#creating new table of returns with more data 
+returns <- returns%>%
+  select(productid, status, pname, pcategory, psubcategory) %>%
+  group_by(productid, status, pname, pcategory, psubcategory) %>%
+  summarise(Freq=n())
+  
+
+#sales joining
+salestable <- dplyr::full_join(returns, salestable)
+salestable <- dplyr::full_join(product2, salestable)
+salestable <- salestable %>%  select(-orderid2)
+salestable <- salestable %>% full_join(SuperstoreSales_returns, by = c("Status" = "status",
+                            "Order.Id" = "orderid")) %>%
+select(status, orderid)
+#delete extra rows
+salestable <- salestable %>%  select(-pname, -pcategory, -psubcategory)
+salestable <- salestable %>%  select(-orderdate, -shipdate, -shippingcost)
+
+#min rank order
+salestable <- salestable %>%  
+  mutate(profit_order = min_rank(profit)) %>%
+  arrange(profit_order)
+
+
+#max rank order
+salestable <- salestable %>%  
+  mutate(profit_maxorder = max_rank(profit)) %>%
+  arrange(profit_maxorder)
+
+#sorting the profit
+salestable %>% sort(salestable$profit)
+class(salestable$profit)
+salestable[order(profit)]
+
+
+#connecting to Postgre
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, port = 5432, host = "bronto.ewi.utwente.nl",
+                 dbname = "dab_ds19201b_32", user = "dab_ds19201b_32", password = "R9qHVF9juAqgJJl7",
+                 options="-c search_path=ass3")
+dbWriteTable(con, "salestable", value = salestable, overwrite = T, row.names = F)
+dbWriteTable(con, "returns", value = returns, overwrite = T, row.names = F)
+dbWriteTable(con, "product", value = product2, overwrite = T, row.names = F)
+#checking the tables
+dbListTables(con)
+str(dbReadTable(con,"salestable"))
+str(dbReadTable(con,"returns"))
+str(dbReadTable(con,"product"))
+
+					        
